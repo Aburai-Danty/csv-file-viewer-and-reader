@@ -1,0 +1,270 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import pandas as pd
+import logging
+import os
+
+# Configuração do log
+logging.basicConfig(filename='app_log.txt', level=logging.DEBUG,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+
+# cinfig color
+HUMIDITY_MIN = 15
+HUMIDITY_MAX = 66
+# config temp
+TEMPERATURE_MIN = 14
+TEMPERATURE_MAX = 18
+# config color
+ALERT_COLOR = "red"
+NORMAL_COLOR = "green"
+DEFAULT_COLOR = "grey"
+
+
+class SensorDisplayApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Sensor Display App")
+        self.root.geometry("1200x600")
+
+        self.filename = None
+        self.df = None
+        self.df_filtered = None
+        self.sensor_index = 0
+        self.update_interval = 10000
+        self.reload_interval = 1260000
+
+        # timestamp da última
+        self.last_mtime = 0
+
+        # Configuração da interface
+        self.create_widgets()
+        self.schedule_sensor_display()  # Inicia a exibição automática dos sensores
+        self.schedule_data_reload()  # Inicia o recarregamento dos dados a cada 21 minutos
+
+    def create_widgets(self):
+
+        self.left_frame = tk.Frame(self.root, width=200, bg='lightgrey')
+        self.left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
+
+        # Botão para abrir arquivo
+        self.open_button = tk.Button(self.left_frame, text="Open CSV", command=self.open_file)
+        self.open_button.pack(pady=5)
+
+        # Variável para a combobox de datas
+        self.date_combobox = tk.StringVar()
+        self.date_combobox.set("Selecione uma data")
+
+        # Menu de opções para a combobox de datas
+        self.date_combobox_menu = tk.OptionMenu(self.left_frame, self.date_combobox, [])
+        self.date_combobox_menu.pack(pady=5)
+
+        # Frame para os botões dos sensores dentro do canvas
+        self.sensor_frame = tk.Frame(self.left_frame)
+        self.sensor_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Canvas para rolagem dos botões dos sensores
+        self.canvas = tk.Canvas(self.sensor_frame)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Frame para o conteúdo do canvas
+        self.canvas_frame = tk.Frame(self.canvas)
+        self.canvas.create_window((0, 0), window=self.canvas_frame, anchor='nw')
+
+        # Configuração do scroll do canvas
+        self.canvas_frame.bind("<Configure>", self.on_frame_configure)
+
+        # Adiciona rolagem do mouse
+        self.canvas.bind_all("<MouseWheel>", self.on_mouse_wheel)
+
+        # Frame centralizado para os displays dos sensores
+        self.display_frame = tk.Frame(self.root, bg='black')
+        self.display_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Frame centralizado para os displays dos sensores
+        self.display_center_frame = tk.Frame(self.display_frame, bg='black')
+        self.display_center_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Adicionando displays de UR e Temp
+        self.create_display_labels()
+
+        # Label para exibir o status de carregamento do arquivo CSV
+        self.status_label = tk.Label(self.display_center_frame, text="", bg='black', fg='white', font=('Arial', 16))
+        self.status_label.pack(pady=10)
+
+    def create_display_labels(self):
+        # Frame para os displays dos sensores
+        self.sensors_display_frame = tk.Frame(self.display_center_frame, bg='black')
+        self.sensors_display_frame.pack(pady=20, padx=20)
+
+        # Display para UR
+        self.ur_label = tk.Label(self.sensors_display_frame, text="Umidade:", bg='black', fg='white',
+                                 font=('Arial', 16))
+        self.ur_label.grid(row=0, column=0, padx=10)
+        self.ur_display = tk.Label(self.sensors_display_frame, text="", bg=DEFAULT_COLOR, width=20, height=2,
+                                   borderwidth=2, relief="solid", font=('Arial', 24))
+        self.ur_display.grid(row=0, column=1, padx=10)
+
+        # Display para Temp
+        self.temp_label = tk.Label(self.sensors_display_frame, text="Temp:", bg='black', fg='white', font=('Arial', 16))
+        self.temp_label.grid(row=1, column=0, padx=10)
+        self.temp_display = tk.Label(self.sensors_display_frame, text="", bg=DEFAULT_COLOR, width=20, height=2,
+                                     borderwidth=2, relief="solid", font=('Arial', 24))
+        self.temp_display.grid(row=1, column=1, padx=10)
+
+        # Label para exibir o número do sensor atual
+        self.sensor_info_label = tk.Label(self.display_center_frame, text="", bg='black', fg='white',
+                                          font=('Arial', 16))
+        self.sensor_info_label.pack(pady=10)
+
+    def open_file(self):
+        try:
+            self.filename = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
+            if self.filename:
+                self.load_data()
+                self.create_sensor_buttons()
+                self.status_label.config(text="Arquivo CSV carregado com sucesso")
+                self.root.after(3000, self.clear_status_label)  # Limpa a mensagem após 3 segundos
+        except Exception as e:
+            logging.error(f"Erro ao abrir o arquivo: {e}")
+            messagebox.showerror("Erro", f"Erro ao abrir o arquivo: {e}")
+
+    def clear_status_label(self):
+        self.status_label.config(text="")
+
+    def load_data(self):
+        try:
+            self.df = pd.read_csv(self.filename, delimiter=';', encoding='ISO-8859-1')
+            logging.info("Arquivo CSV carregado com sucesso.")
+            self.populate_date_options()
+        except Exception as e:
+            logging.error(f"Erro ao ler o arquivo CSV: {e}")
+            messagebox.showerror("Erro", f"Erro ao ler o arquivo CSV: {e}")
+
+    def populate_date_options(self):
+        try:
+            if 'Data' in self.df.columns:
+                dates = self.df['Data'].str[:10].unique()
+                menu = self.date_combobox_menu["menu"]
+                menu.delete(0, "end")
+                for date in dates:
+                    menu.add_command(label=date, command=lambda d=date: self.on_date_selected(d))
+                self.date_combobox.set(dates[-1])  # Seleciona a última data
+                self.on_date_selected(dates[-1])  # Filtra os dados pela última data
+                logging.info("Opções de data populadas.")
+            else:
+                logging.warning("Coluna 'Data' não encontrada no arquivo CSV.")
+        except Exception as e:
+            logging.error(f"Erro ao popular opções de data: {e}")
+            messagebox.showerror("Erro", f"Erro ao popular opções de data: {e}")
+
+    def on_date_selected(self, selected_date):
+        logging.info(f"Data selecionada: {selected_date}")
+        self.filter_data_by_date(selected_date)
+        self.sensor_index = 0  # Reinicia o índice do sensor
+        self.schedule_sensor_display()  # Inicia o loop de exibição dos sensores
+
+    def filter_data_by_date(self, date):
+        try:
+            self.df_filtered = self.df[self.df['Data'].str.startswith(date)]
+            logging.info(f"Dados filtrados para {date}:")
+            logging.info(self.df_filtered.head().to_string())
+            self.create_sensor_buttons()
+        except Exception as e:
+            logging.error(f"Erro ao filtrar dados para a data {date}: {e}")
+            messagebox.showerror("Erro", f"Erro ao filtrar dados para a data {date}: {e}")
+
+    def create_sensor_buttons(self):
+        try:
+            for widget in self.canvas_frame.winfo_children():
+                widget.destroy()
+
+            if not self.df_filtered.empty:
+                num_sensors = (self.df_filtered.shape[1] - 4) // 3
+                logging.info(f"Número de sensores: {num_sensors}")
+
+                for i in range(num_sensors):
+                    sensor_button = tk.Button(self.canvas_frame, text=f"Sensor {i}", command=self.make_lambda(i))
+                    sensor_button.pack(fill=tk.X, pady=2)
+                logging.info(f"Botões de sensor criados: {num_sensors}")
+                self.on_frame_configure(None)  # Atualiza a rolagem
+            else:
+                logging.info("Nenhum dado filtrado disponível.")
+        except Exception as e:
+            logging.error(f"Erro ao criar botões de sensor: {e}")
+
+    def make_lambda(self, sensor_index):
+        return lambda: self.display_sensor_data(sensor_index)
+
+    def display_sensor_data(self, sensor_index):
+        try:
+            if not self.df_filtered.empty:
+                ur_values = self.df_filtered.iloc[:, 4 + sensor_index * 3].dropna().values
+                temp_values = self.df_filtered.iloc[:, 5 + sensor_index * 3].dropna().values
+
+                if len(ur_values) > 0:
+                    ur_mean = ur_values.mean()
+                    self.ur_display.config(text=f"{ur_mean:.2f}")
+                    self.update_display_color(self.ur_display, ur_mean, HUMIDITY_MIN, HUMIDITY_MAX)
+
+                if len(temp_values) > 0:
+                    temp_mean = temp_values.mean()
+                    self.temp_display.config(text=f"{temp_mean:.2f}")
+                    self.update_display_color(self.temp_display, temp_mean, TEMPERATURE_MIN, TEMPERATURE_MAX)
+
+                self.sensor_info_label.config(text=f"Sensor: {sensor_index}")
+                logging.info(f"Exibindo dados para o Sensor {sensor_index}: UR = {ur_mean:.2f}, Temp = {temp_mean:.2f}")
+            else:
+                self.sensor_info_label.config(text="Nenhum dado disponível para exibição")
+                logging.info("Nenhum dado disponível para exibição")
+        except Exception as e:
+            logging.error(f"Erro ao exibir dados do sensor {sensor_index}: {e}")
+            messagebox.showerror("Erro", f"Erro ao exibir dados do sensor {sensor_index}: {e}")
+
+    def update_display_color(self, display_label, value, min_value, max_value):
+        if value < min_value or value > max_value:
+            display_label.config(bg=ALERT_COLOR)
+            self.flash_display(display_label)
+        else:
+            display_label.config(bg=NORMAL_COLOR)
+
+    def flash_display(self, display_label):
+        def toggle_color():
+            current_color = display_label.cget("bg")
+            new_color = ALERT_COLOR if current_color == DEFAULT_COLOR else DEFAULT_COLOR
+            display_label.config(bg=new_color)
+            display_label.after(500, toggle_color)
+
+        toggle_color()
+
+    def on_frame_configure(self, event):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def on_mouse_wheel(self, event):
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def schedule_sensor_display(self):
+        if self.df_filtered is not None and not self.df_filtered.empty:
+            self.display_sensor_data(self.sensor_index)
+            self.sensor_index = (self.sensor_index + 1) % ((self.df_filtered.shape[1] - 4) // 3)
+        self.root.after(self.update_interval, self.schedule_sensor_display)
+
+    def schedule_data_reload(self):
+        self.reload_data()
+        self.root.after(self.reload_interval, self.schedule_data_reload)
+
+    def reload_data(self):
+        try:
+            if self.filename:
+                current_mtime = os.path.getmtime(self.filename)
+                if current_mtime != self.last_mtime:
+                    self.load_data()
+                    self.last_mtime = current_mtime
+                    logging.info("Dados recarregados após detecção de alteração no arquivo.")
+        except Exception as e:
+            logging.error(f"Erro ao recarregar dados: {e}")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = SensorDisplayApp(root)
+    root.mainloop()
